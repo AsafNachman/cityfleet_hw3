@@ -78,18 +78,32 @@ Vehicles in service: 4
 
 ### ניסוי 3: `vehicles_` כ-`std::vector<Vehicle>`
 
-שיניתי ל-`std::vector<Vehicle>` וניסיתי לדחוף רכב לפי ערך. ב-g++ 13 עצם ההצהרה של הווקטור עוברת, אבל ברגע שמנסים לבנות `Vehicle` בפנים זה נופל:
+שיניתי ב-`Fleet.h` את `vehicles_` ל-`std::vector<Vehicle>` כמו שכתוב. בהתחלה `add` עדיין עושה `push_back(std::move(v))` על `unique_ptr`, אז קיבלתי:
+
+```text
+Fleet.cpp:8:24: error: no matching function for call to 'std::vector<Vehicle>::push_back(std::unique_ptr<PoweredVehicle>)'
+note:   no known conversion from 'std::unique_ptr<PoweredVehicle>' to 'const Vehicle&'
+```
+
+אז ניסיתי לדחוף לפי ערך (`push_back(*v)`), ופה כבר יוצאת הנקודה של הניסוי — אי אפשר לבנות `Vehicle`:
 
 ```text
 error: invalid new-expression of abstract class type 'Vehicle'
-/src/Vehicle.h:8:7: note:   because the following virtual functions are pure within 'Vehicle':
-/src/Vehicle.h:23:25: note:     'virtual std::string Vehicle::kind() const'
-/src/Vehicle.h:24:20: note:     'virtual double Vehicle::dailyCostILS() const'
+Vehicle.h:8:7: note:   because the following virtual functions are pure within 'Vehicle':
+Vehicle.h:23:25: note:     'virtual std::string Vehicle::kind() const'
+Vehicle.h:24:20: note:     'virtual double Vehicle::dailyCostILS() const'
 ```
 
-`Vehicle` אבסטרקטית (יש `= 0`), ואי אפשר ליצור ממנה אובייקט. לכן אי אפשר לשמור אותה לפי ערך בתוך `vector`.
+אם שמים `Vehicle` כשדה רגיל ב-`Fleet` (לא בתוך vector) מקבלים ישר:
 
-אם האב לא היה אבסטרקטי הקוד היה מתקמפל, אבל אז היה object slicing: נכנס אוטובוס, נחתך רק חלק ה-`Vehicle`, והעלות/המדידות של הנגזר נעלמות. בלי שגיאה, סתם תוצאות שגויות.
+```text
+Fleet.h:33:13: error: cannot declare field 'Fleet::cannot_exist_' to be of abstract type 'Vehicle'
+Vehicle.h:8:7: note:   because the following virtual functions are pure within 'Vehicle':
+```
+
+למה דווקא פה זה נכשל: `Vehicle` אבסטרקטית (`kind` ו-`dailyCostILS` טהורות), ואי אפשר ליצור ממנה אובייקט לפי ערך.
+
+אם האב לא היה אבסטרקטי הקוד היה מתקמפל, ואז היה object slicing בשקט: נכנס אוטובוס, נחתך רק חלק ה-`Vehicle`, והעלות/המדידות של הנגזר נעלמות. בלי שגיאה, סתם תוצאות שגויות. לכן אנחנו שומרים מצביעים ולא `Vehicle` לפי ערך.
 
 ---
 
@@ -189,8 +203,8 @@ Ledger.h:15:41: note: the expression 'IsFormattable<U, void>::value [with T = Un
 
 ### 1. למה מחלקת בסיס פולימורפית חייבת הורס וירטואלי?
 
-אם עושים `delete` על `Vehicle*` שבאמת מצביע על `ElectricBus`, בלי הורס וירטואלי המהדר קורא רק להורס של `Vehicle` (לפי הטיפוס הסטטי של המצביע). ההורס של האוטובוס לא רץ, אז שדות/זיכרון שהוקצו בנגזר לא משתחררים — זה UB ודליפה.  
-למה זה שורד טסטים: `kind()` ו-`dailyCostILS()` עדיין וירטואליות ועובדות רגיל דרך ה-vtable. הבאג יושב רק בשחרור, לא בלוגיקה היומית.
+`delete` על מצביע לבסיס (`Vehicle*`) מחפש הורס לפי הטיפוס הסטטי של המצביע, אלא אם ההורס וירטואלי. בלי `virtual` רץ רק הורס של `Vehicle`, ההורס של האוטובוס לא נקרא, השדות שלו לא משוחררים, וההתנהגות לא מוגדרת (UB / דליפה).  
+למה זה שורד בדיקות: `kind()` ו-`dailyCostILS()` ממשיכות לעבוד רגיל דרך ה-vtable, אז טסטים פונקציונליים עוברים. הבאג יושב רק בשחרור.
 
 ### 2. Object slicing
 
@@ -215,12 +229,21 @@ Slicing זה כשמעתיקים אובייקט נגזר לתוך משתנה/מכ
 
 ## חלק ו' — בונוס (`WaterTanker`)
 
-הוספתי רק את `src/WaterTanker.h` וב-`main.cpp` include + שורת `add` אחת. לא שיניתי את `Fleet` / `Vehicle` / שאר הרכבים בשביל הסוג החדש.
+הוספתי רק את `src/WaterTanker.h` וב-`main.cpp` include + שורת `add`. לא נגעתי ב-`Fleet` / `Vehicle` בשביל הסוג החדש.
 
 ```text
-src/WaterTanker.h   (קובץ חדש)
-src/main.cpp        (+include, +fleet.add(...WaterTanker...))
+$ git diff --cached --stat
+ src/WaterTanker.h | 38 ++++++++++++++++++++++++++++++++++++++
+ src/main.cpp      |  5 ++++-
+ 2 files changed, 42 insertions(+), 1 deletion(-)
 ```
 
-העיקרון: פתוח/סגור — אפשר להרחיב בלי לגעת בקוד הישן.  
-המילה שקנתה את זה: `virtual`. `Fleet` עובד מול `Vehicle`/`PoweredVehicle`, וה-vtable מגיע לבד לטנקר.
+```text
+$ git diff --cached -- src/main.cpp
++#include "WaterTanker.h" // עבור הבונוס
++        // הוספת הבונוס
++        fleet.add(std::make_unique<WaterTanker>(4, "Tanker-1", "DepotA", 120.0, 1000.0));
+```
+
+העיקרון: פתוח/סגור — אפשר להרחיב בלי לשנות קוד ישן.  
+המילה שקנתה את זה: `virtual`. `Fleet` מדבר רק עם `Vehicle`/`PoweredVehicle`, וה-vtable מגיע לבד לטנקר.
